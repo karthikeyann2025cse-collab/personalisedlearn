@@ -1,0 +1,367 @@
+import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Calendar,
+  CheckCircle2,
+  Clock,
+  Sparkles,
+  Plus,
+  AlertCircle,
+  ArrowRight,
+  RotateCcw,
+  BookOpen,
+  CalendarCheck,
+  ChevronRight,
+  Download,
+  CalendarRange,
+  RefreshCw,
+  MoreVertical,
+} from 'lucide-react';
+import { plannerApi } from '../api/client';
+
+export const Planner: React.FC = () => {
+  const queryClient = useQueryClient();
+  const [newDeadlineSubject, setNewDeadlineSubject] = useState('');
+  const [newDeadlineDate, setNewDeadlineDate] = useState('');
+  const [deadlines, setDeadlines] = useState<{ subject: string; date: string }[]>([
+    { subject: 'Operating Systems Midterm', date: '2026-11-05' },
+    { subject: 'Algorithms Final Project', date: '2026-11-12' },
+  ]);
+
+  // Query Current Plan
+  const { data: planRes, isLoading } = useQuery({
+    queryKey: ['plannerCurrent'],
+    queryFn: () => plannerApi.getCurrent(),
+  });
+  const plan = planRes?.data;
+  const initialTasks = [
+    {
+      id: 1,
+      title: 'Review Virtual Memory & Paging',
+      subject: 'Operating Systems',
+      due_date: 'Today',
+      duration_minutes: 45,
+      status: 'pending',
+      priority: 'high',
+    },
+    {
+      id: 2,
+      title: 'Practice Dynamic Programming (Knapsack & LCS)',
+      subject: 'Algorithms',
+      due_date: 'Tomorrow',
+      duration_minutes: 60,
+      status: 'in_progress',
+      priority: 'high',
+    },
+    {
+      id: 3,
+      title: 'Quiz on Cache Replacement Policies',
+      subject: 'Operating Systems',
+      due_date: 'Oct 30',
+      duration_minutes: 30,
+      status: 'pending',
+      priority: 'medium',
+    },
+    {
+      id: 4,
+      title: 'Read Graph Traversals Chapter 4',
+      subject: 'Algorithms',
+      due_date: 'Nov 01',
+      duration_minutes: 40,
+      status: 'completed',
+      priority: 'low',
+    },
+  ];
+
+  const [localTasks, setLocalTasks] = useState<any[]>(initialTasks);
+  const tasks = plan?.tasks && plan.tasks.length > 0 ? plan.tasks : localTasks;
+
+  // Generate Plan Mutation
+  const generateMutation = useMutation({
+    mutationFn: () => plannerApi.generate(deadlines),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plannerCurrent'] });
+    },
+  });
+
+  // Task Status Update Mutation
+  const updateTaskMutation = useMutation({
+    mutationFn: ({ taskId, status }: { taskId: number; status: string }) =>
+      plannerApi.updateTask(taskId, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plannerCurrent'] });
+    },
+  });
+
+  const handleAddDeadline = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDeadlineSubject || !newDeadlineDate) return;
+    setDeadlines((prev) => [...prev, { subject: newDeadlineSubject, date: newDeadlineDate }]);
+    setNewDeadlineSubject('');
+    setNewDeadlineDate('');
+  };
+
+  const handleToggleTask = (task: any) => {
+    const nextStatus = task.status === 'completed' ? 'pending' : 'completed';
+    setLocalTasks((prev) =>
+      prev.map((t) => (t.id === task.id ? { ...t, status: nextStatus } : t))
+    );
+    updateTaskMutation.mutate({ taskId: task.id, status: nextStatus });
+  };
+
+  // Smart Auto-Rescheduling (re-prioritize and optimize)
+  const handleAutoReschedule = () => {
+    const sorted = [...tasks].sort((a, b) => {
+      if (a.status === 'completed' && b.status !== 'completed') return 1;
+      if (a.status !== 'completed' && b.status === 'completed') return -1;
+      const prio = { high: 3, medium: 2, low: 1 };
+      return (prio[b.priority as keyof typeof prio] || 1) - (prio[a.priority as keyof typeof prio] || 1);
+    });
+    setLocalTasks(sorted);
+    alert('Smart Schedule Re-optimized! Critical priorities and pending reviews placed first.');
+  };
+
+  // Export iCalendar (.ics)
+  const handleExportCalendar = () => {
+    const now = new Date();
+    const pad = (n: number) => (n < 10 ? '0' + n : n);
+    const formatDate = (d: Date) =>
+      `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(
+        d.getUTCMinutes()
+      )}00Z`;
+
+    let icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//LearnOn AI//Smart Study Planner//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+    ];
+
+    tasks.forEach((t: any, idx: number) => {
+      const taskStart = new Date(now.getTime() + (idx + 1) * 3600 * 1000 * 24);
+      const taskEnd = new Date(taskStart.getTime() + (t.duration_minutes || 45) * 60 * 1000);
+
+      icsContent.push('BEGIN:VEVENT');
+      icsContent.push(`UID:learnon-${t.id}-${idx}@learnon.app`);
+      icsContent.push(`DTSTAMP:${formatDate(now)}`);
+      icsContent.push(`DTSTART:${formatDate(taskStart)}`);
+      icsContent.push(`DTEND:${formatDate(taskEnd)}`);
+      icsContent.push(`SUMMARY:[LearnOn] ${t.subject}: ${t.title}`);
+      icsContent.push(`DESCRIPTION:Study task generated by LearnOn AI. Priority: ${t.priority}. Duration: ${t.duration_minutes || 45} mins.`);
+      icsContent.push('STATUS:CONFIRMED');
+      icsContent.push('END:VEVENT');
+    });
+
+    icsContent.push('END:VCALENDAR');
+
+    const blob = new Blob([icsContent.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `LearnOn_Study_Plan_${now.toISOString().slice(0, 10)}.ics`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-8 max-w-7xl mx-auto pb-12">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-300 to-pink-400 bg-clip-text text-transparent">
+            AI Adaptive Study Planner
+          </h1>
+          <p className="text-slate-400 text-sm mt-1">
+            Dynamic study schedule synchronized to your exam deadlines, strengths, and available hours.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleExportCalendar}
+            className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-semibold text-slate-200 transition-all shadow-sm"
+            title="Download .ics calendar file for Google Calendar, Apple Calendar, Outlook"
+          >
+            <Download className="w-3.5 h-3.5" /> Sync Calendar (.ics)
+          </button>
+
+          <button
+            disabled={generateMutation.isPending}
+            onClick={() => generateMutation.mutate()}
+            className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold rounded-xl text-xs sm:text-sm shadow-lg shadow-indigo-600/30 flex items-center gap-2 transition-all disabled:opacity-50"
+          >
+            {generateMutation.isPending ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Re-optimizing Plan...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                Generate Adaptive Plan
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left Column: Deadlines & Targets */}
+        <div className="space-y-6">
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+            <h3 className="text-base font-bold text-white mb-1 flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-indigo-400" />
+              Upcoming Exam Deadlines
+            </h3>
+            <p className="text-xs text-slate-400 mb-4">
+              AI distributes topics backward from these dates to prevent cramming.
+            </p>
+
+            {/* List */}
+            <div className="space-y-2 mb-5">
+              {deadlines.map((dl, idx) => (
+                <div
+                  key={idx}
+                  className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between"
+                >
+                  <div>
+                    <p className="text-xs font-semibold text-slate-200">{dl.subject}</p>
+                    <p className="text-[11px] text-indigo-400">{dl.date}</p>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                    Active Target
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Add deadline form */}
+            <form onSubmit={handleAddDeadline} className="space-y-2 pt-2 border-t border-slate-800">
+              <input
+                type="text"
+                placeholder="Target Exam or Course..."
+                value={newDeadlineSubject}
+                onChange={(e) => setNewDeadlineSubject(e.target.value)}
+                className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={newDeadlineDate}
+                  onChange={(e) => setNewDeadlineDate(e.target.value)}
+                  className="flex-1 bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Strategy Tip Box */}
+          <div className="bg-gradient-to-br from-indigo-950/60 via-slate-900 to-purple-950/40 border border-indigo-800/30 rounded-2xl p-5 shadow-lg">
+            <div className="flex items-center gap-2 text-xs font-bold text-indigo-300 mb-2">
+              <AlertCircle className="w-4 h-4 text-indigo-400" />
+              Optimal Study Pacing
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Your generated study schedule incorporates spaced retrieval practice. Tasks are weighted higher for topics
+              with lower mastery scores in your diagnostic quizzes.
+            </p>
+          </div>
+        </div>
+
+        {/* Right 2 Columns: Study Task Flow */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+              <div>
+                <h2 className="text-lg font-bold text-white">Daily Learning Agenda</h2>
+                <p className="text-xs text-slate-400">Mark tasks complete to dynamically adjust subsequent workload</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleAutoReschedule}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-semibold text-slate-300 transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3 text-indigo-400" /> Auto-Reschedule
+                </button>
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
+                  {tasks.filter((t: any) => t.status === 'completed').length}/{tasks.length} Completed
+                </span>
+              </div>
+            </div>
+
+            {/* Task list */}
+            <div className="space-y-3">
+              {tasks.map((task: any) => {
+                const isDone = task.status === 'completed';
+                return (
+                  <motion.div
+                    key={task.id}
+                    layout
+                    className={`p-4 rounded-xl border transition-all flex items-start justify-between gap-4 ${
+                      isDone
+                        ? 'bg-slate-800/30 border-slate-800/60 opacity-60'
+                        : 'bg-slate-800/70 border-slate-700/80 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <button
+                        onClick={() => handleToggleTask(task)}
+                        className={`mt-0.5 w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                          isDone
+                            ? 'bg-emerald-500 border-emerald-400 text-white'
+                            : 'border-slate-600 hover:border-indigo-400'
+                        }`}
+                      >
+                        {isDone && <CheckCircle2 className="w-4 h-4" />}
+                      </button>
+                      <div>
+                        <h4 className={`text-sm font-semibold ${isDone ? 'line-through text-slate-400' : 'text-white'}`}>
+                          {task.title}
+                        </h4>
+                        <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-slate-400">
+                          <span className="px-2 py-0.5 rounded-md bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 text-[10px] font-medium">
+                            {task.subject}
+                          </span>
+                          <span className="flex items-center gap-1 text-slate-400 text-[11px]">
+                            <Clock className="w-3 h-3 text-slate-500" />
+                            {task.duration_minutes || 45} mins
+                          </span>
+                          <span className="flex items-center gap-1 text-slate-400 text-[11px]">
+                            <CalendarCheck className="w-3 h-3 text-slate-500" />
+                            Due: {task.due_date || 'Today'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Priority badge */}
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
+                        task.priority === 'high'
+                          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                          : task.priority === 'medium'
+                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                          : 'bg-slate-700/40 text-slate-400 border border-slate-700'
+                      }`}
+                    >
+                      {task.priority || 'Normal'}
+                    </span>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
